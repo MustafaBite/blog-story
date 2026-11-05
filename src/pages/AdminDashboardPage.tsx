@@ -10,7 +10,6 @@ import {
   Edit3,
   ExternalLink,
   X,
-  RotateCcw,
   KeyRound,
   Database,
   Upload,
@@ -40,13 +39,12 @@ export function AdminDashboardPage() {
     updateArtwork,
     deleteArtwork,
     deleteComment,
-    seedInitialDataToSupabase,
+    refreshData,
     isCloudConnected,
-    resetToDefaults,
   } = useData();
 
-  const [seeding, setSeeding] = useState(false);
-  const [seedSuccess, setSeedSuccess] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncSuccess, setSyncSuccess] = useState(false);
 
   const { theme } = useTheme();
   const isDark = theme === "dark";
@@ -447,39 +445,31 @@ export function AdminDashboardPage() {
             <div className="text-[11px] text-dark-400 uppercase">Yorum</div>
           </div>
 
-          {/* Supabase'e Aktarma Butonu */}
+          {/* Bulutla Eşitle Butonu */}
           {isCloudConnected && (
             <button
               onClick={async () => {
-                if (
-                  window.confirm(
-                    "Mevcut 6 hikaye ve 9 eseri Supabase veritabanınıza yüklemek istiyor musunuz?"
-                  )
-                ) {
-                  setSeeding(true);
-                  const ok = await seedInitialDataToSupabase();
-                  setSeeding(false);
-                  if (ok) {
-                    setSeedSuccess(true);
-                    setTimeout(() => setSeedSuccess(false), 3000);
-                  }
-                }
+                setSyncing(true);
+                await refreshData();
+                setSyncing(false);
+                setSyncSuccess(true);
+                setTimeout(() => setSyncSuccess(false), 2500);
               }}
-              disabled={seeding}
-              title="Başlangıç Hikaye ve Eserlerini Supabase'e Aktar"
+              disabled={syncing}
+              title="Buluttaki En Güncel Verileri Çek ve Eşitle"
               className={`flex items-center gap-2 px-3.5 py-3 rounded-2xl border text-xs font-semibold transition-all ${
-                seedSuccess
+                syncSuccess
                   ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
                   : "border-dark-700 bg-dark-800 text-brand-300 hover:bg-dark-700"
               }`}
             >
               <Database className="w-4 h-4" />
               <span className="hidden sm:inline">
-                {seeding
-                  ? "Yükleniyor..."
-                  : seedSuccess
-                  ? "Buluta Aktarıldı!"
-                  : "Verileri Supabase'e Yükle"}
+                {syncing
+                  ? "Eşitleniyor..."
+                  : syncSuccess
+                  ? "Bulutla Eşitlendi!"
+                  : "Bulutla Eşitle"}
               </span>
             </button>
           )}
@@ -491,23 +481,6 @@ export function AdminDashboardPage() {
             className="p-3 rounded-2xl border border-dark-700 text-dark-400 hover:text-amber-400 hover:border-amber-500/40 hover:bg-dark-800 transition-colors"
           >
             <KeyRound className="w-5 h-5" />
-          </button>
-
-          {/* Varsayılana Sıfırla Butonu */}
-          <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Tüm mock verilerini varsayılana sıfırlamak istiyor musunuz?"
-                )
-              ) {
-                resetToDefaults();
-              }
-            }}
-            title="Verileri Fabrika Ayarlarına Döndür"
-            className="p-3 rounded-2xl border border-dark-700 text-dark-400 hover:text-dark-100 hover:bg-dark-800 transition-colors"
-          >
-            <RotateCcw className="w-5 h-5" />
           </button>
         </div>
       </div>

@@ -83,6 +83,10 @@ export function AuthModal() {
         const res = await register(email, password, passwordConfirm, name);
         if (!res.success && res.error) {
           setErrorMsg(res.error);
+        } else if (res.requiresEmailConfirmation) {
+          setSuccessMsg(
+            "Kayıt başarılı! E-posta adresinize bir doğrulama bağlantısı gönderildi. Lütfen gelen kutunuzu (ve spam klasörünü) kontrol ederek hesabınızı onaylayın."
+          );
         } else {
           setSuccessMsg("Hesabınız başarıyla oluşturuldu ve oturum açıldı!");
         }

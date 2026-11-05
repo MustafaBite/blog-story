@@ -5,7 +5,22 @@
 -- 1. Eklentileri etkinleştir (UUID üretimi için)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. HİKAYELER / YAZILAR TABLOSU (stories)
+-- 2. KULLANICI PROFİLLERİ TABLOSU (profiles)
+-- auth.users ile 1:1 senkronize çalışır ve 1000+ kullanıcıda kilitlenmeyi önler
+CREATE TABLE IF NOT EXISTS public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT,
+    display_name TEXT,
+    avatar_url TEXT,
+    role TEXT DEFAULT 'reader' CHECK (role IN ('admin', 'reader')),
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+-- Profiles İndeksleri (Sorgu & Senkronizasyon Performansı için)
+CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(email);
+
+-- 3. HİKAYELER / YAZILAR TABLOSU (stories)
 CREATE TABLE IF NOT EXISTS public.stories (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     slug TEXT UNIQUE NOT NULL,
@@ -25,7 +40,7 @@ CREATE TABLE IF NOT EXISTS public.stories (
 -- Var olan tablolar için pdf_url kolonu güvencesi
 ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS pdf_url TEXT;
 
--- 3. SANAT ESERLERİ TABLOSU (artworks)
+-- 4. SANAT ESERLERİ TABLOSU (artworks)
 CREATE TABLE IF NOT EXISTS public.artworks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     title TEXT NOT NULL,
@@ -40,10 +55,7 @@ CREATE TABLE IF NOT EXISTS public.artworks (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Var olan tablolar için pdf_url kolonu güvencesi
-ALTER TABLE public.stories ADD COLUMN IF NOT EXISTS pdf_url TEXT;
-
--- 4. YORUMLAR TABLOSU (comments)
+-- 5. YORUMLAR TABLOSU (comments)
 CREATE TABLE IF NOT EXISTS public.comments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     story_id UUID NOT NULL REFERENCES public.stories(id) ON DELETE CASCADE,
@@ -58,7 +70,7 @@ CREATE TABLE IF NOT EXISTS public.comments (
     updated_at TIMESTAMPTZ
 );
 
--- İndeksler (Sorgu performansı için)
+-- İndeksler (Sorgu performansı ve anlık yoğunluk için)
 CREATE INDEX IF NOT EXISTS idx_stories_slug ON public.stories(slug);
 CREATE INDEX IF NOT EXISTS idx_stories_published_at ON public.stories(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artworks_created_at ON public.artworks(created_at DESC);
@@ -66,10 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_comments_story_id ON public.comments(story_id);
 CREATE INDEX IF NOT EXISTS idx_comments_user_id ON public.comments(user_id);
 
 -- ==============================================================================
--- 5. ROW LEVEL SECURITY (RLS) POLİTİKALARI
+-- 6. ROW LEVEL SECURITY (RLS) POLİTİKALARI
 -- ==============================================================================
 
 -- RLS'yi aktif et
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.stories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.artworks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
@@ -82,13 +95,32 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- ─── PROFİLLER POLİTİKALARI ───────────────────────────────────────────────────
+-- Herkes profilleri okuyabilir (Yorumlardaki isim ve avatarlar için)
+CREATE POLICY "Profiles are publicly readable" 
+    ON public.profiles FOR SELECT 
+    USING (true);
+
+-- Kullanıcılar yalnızca kendi profillerini güncelleyebilir
+CREATE POLICY "Users can update own profile" 
+    ON public.profiles FOR UPDATE 
+    USING (auth.uid() = id);
+
+-- Kullanıcılar kendi profilini ekleyebilir
+CREATE POLICY "Users can insert own profile" 
+    ON public.profiles FOR INSERT 
+    WITH CHECK (auth.uid() = id);
+
+-- Yönetici tüm profilleri yönetebilir
+CREATE POLICY "Admin can manage all profiles" 
+    ON public.profiles FOR ALL 
+    USING (public.is_admin());
+
 -- ─── HİKAYELER POLİTİKALARI ──────────────────────────────────────────────────
--- Herkes okuyabilir (Misafirler ve kullanıcılar)
 CREATE POLICY "Stories are publicly readable" 
     ON public.stories FOR SELECT 
     USING (true);
 
--- Yalnızca Admin ekleyebilir, güncelleyebilir ve silebilir
 CREATE POLICY "Only admin can insert stories" 
     ON public.stories FOR INSERT 
     WITH CHECK (public.is_admin());
@@ -102,12 +134,10 @@ CREATE POLICY "Only admin can delete stories"
     USING (public.is_admin());
 
 -- ─── SANAT ESERLERİ POLİTİKALARI ──────────────────────────────────────────────
--- Herkes okuyabilir
 CREATE POLICY "Artworks are publicly readable" 
     ON public.artworks FOR SELECT 
     USING (true);
 
--- Yalnızca Admin ekleyebilir, güncelleyebilir ve silebilir
 CREATE POLICY "Only admin can insert artworks" 
     ON public.artworks FOR INSERT 
     WITH CHECK (public.is_admin());
@@ -121,46 +151,133 @@ CREATE POLICY "Only admin can delete artworks"
     USING (public.is_admin());
 
 -- ─── YORUMLAR POLİTİKALARI ───────────────────────────────────────────────────
--- Herkes yorumları okuyabilir
 CREATE POLICY "Comments are publicly readable" 
     ON public.comments FOR SELECT 
     USING (true);
 
--- Oturum açmış herhangi bir okuyucu yorum ekleyebilir
 CREATE POLICY "Authenticated users can post comments" 
     ON public.comments FOR INSERT 
     WITH CHECK (auth.uid() IS NOT NULL);
 
--- Yalnızca yorumun sahibi kendi yorumunu düzenleyebilir
 CREATE POLICY "Users can update their own comments" 
     ON public.comments FOR UPDATE 
     USING (auth.uid() = user_id);
 
--- Yorumun sahibi VEYA Yönetici silebilir (Moderasyon)
 CREATE POLICY "Users can delete own comments or admin can delete any" 
     ON public.comments FOR DELETE 
     USING (auth.uid() = user_id OR public.is_admin());
 
 -- ==============================================================================
--- 6. SUPABASE STORAGE (MEDYA KOVASI) YAPILANDIRMASI
+-- 7. AUTH SENKRONİZASYON TRIGGER'I (auth.users -> public.profiles)
 -- ==============================================================================
--- 'portfolio-media' adında halka açık bir depolama alanı oluşturun:
+-- Kullanıcı auth.users tablosuna eklendiği an otomatik olarak public.profiles'a da yazılır.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    INSERT INTO public.profiles (id, email, display_name, avatar_url, role, created_at, updated_at)
+    VALUES (
+        NEW.id,
+        NEW.email,
+        COALESCE(
+            NEW.raw_user_meta_data->>'name',
+            NEW.raw_user_meta_data->>'display_name',
+            SPLIT_PART(NEW.email, '@', 1)
+        ),
+        COALESCE(
+            NEW.raw_user_meta_data->>'avatar_url',
+            'https://api.dicebear.com/7.x/bottts/svg?seed=' || NEW.id::text
+        ),
+        CASE 
+            WHEN LOWER(NEW.email) = 'mustafabite2357@gmail.com' THEN 'admin'
+            ELSE 'reader'
+        END,
+        NOW(),
+        NOW()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        display_name = COALESCE(EXCLUDED.display_name, public.profiles.display_name),
+        updated_at = NOW();
+
+    RETURN NEW;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- 1000+ eşzamanlı istekte trigger hatası çıksa dahi auth.users kaydının kesilmesini önler
+        RAISE WARNING 'handle_new_user trigger hatası: %', SQLERRM;
+        RETURN NEW;
+END;
+$$;
+
+-- Trigger'ı bağla
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.handle_new_user();
+
+-- Var olan auth.users kayıtlarını profiles tablosuna geriye dönük aktar (Backfill)
+INSERT INTO public.profiles (id, email, display_name, avatar_url, role, created_at, updated_at)
+SELECT 
+    id,
+    email,
+    COALESCE(raw_user_meta_data->>'name', raw_user_meta_data->>'display_name', SPLIT_PART(email, '@', 1)),
+    'https://api.dicebear.com/7.x/bottts/svg?seed=' || id::text,
+    CASE WHEN LOWER(email) = 'mustafabite2357@gmail.com' THEN 'admin' ELSE 'reader' END,
+    created_at,
+    NOW()
+FROM auth.users
+ON CONFLICT (id) DO NOTHING;
+
+-- ==============================================================================
+-- 8. SUPABASE STORAGE (MEDYA KOVASI) YAPILANDIRMASI
+-- ==============================================================================
 INSERT INTO storage.buckets (id, name, public) 
 VALUES ('portfolio-media', 'portfolio-media', true)
 ON CONFLICT (id) DO NOTHING;
 
--- Depolama Politikaları:
--- 1. Herkes görselleri görebilir
 CREATE POLICY "Media is publicly accessible"
     ON storage.objects FOR SELECT
     USING (bucket_id = 'portfolio-media');
 
--- 2. Yalnızca Admin görsel yükleyebilir
 CREATE POLICY "Only admin can upload media"
     ON storage.objects FOR INSERT
     WITH CHECK (bucket_id = 'portfolio-media' AND (auth.jwt() ->> 'email') = 'mustafabite2357@gmail.com');
 
--- 3. Yalnızca Admin görsel silebilir
 CREATE POLICY "Only admin can delete media"
     ON storage.objects FOR DELETE
     USING (bucket_id = 'portfolio-media' AND (auth.jwt() ->> 'email') = 'mustafabite2357@gmail.com');
+
+-- ==============================================================================
+-- 9. SUPABASE REALTIME (CANLI ÇOKLU CİHAZ EŞZAMANLAMA) YAPILANDIRMASI
+-- ==============================================================================
+-- Mobil, masaüstü veya farklı tarayıcılar arasında anında senkronizasyon için
+-- tabloları supabase_realtime yayınına ekleyin:
+DO $$
+BEGIN
+    BEGIN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.stories;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.artworks;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.comments;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+END $$;
+

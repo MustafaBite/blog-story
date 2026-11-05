@@ -33,7 +33,7 @@ interface AuthContextType {
     password: string,
     passwordConfirm: string,
     name: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; error?: string; requiresEmailConfirmation?: boolean }>;
   logout: () => Promise<void>;
   authModalOpen: boolean;
   authModalMessage: string;
@@ -89,8 +89,11 @@ function saveLocalUsersDb(users: StoredUserAccount[]) {
 // Supabase & Auth hata mesajlarını kullanıcı dostu Türkçe metinlere dönüştürür
 function translateAuthError(msg: string): string {
   const lower = msg.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("429")) {
-    return "Çok fazla istek gönderildi. Lütfen biraz bekleyin veya giriş yapmayı deneyin.";
+  if (lower.includes("over_email_send_rate_limit")) {
+    return "Supabase saatlik e-posta gönderim limitine ulaşıldı. Lütfen Supabase panelinden 'Confirm email' ayarını kapatın veya harici bir SMTP (Resend) tanımlayın.";
+  }
+  if (lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
+    return "Çok fazla istek gönderildi. Lütfen 1 dakika bekleyip tekrar deneyin.";
   }
   if (
     lower.includes("invalid login credentials") ||
@@ -102,10 +105,10 @@ function translateAuthError(msg: string): string {
     lower.includes("user already registered") ||
     lower.includes("already exists")
   ) {
-    return "Bu e-posta adresi zaten kullanımda. Lütfen 'Giriş Yap' sekmesinden giriş yapın.";
+    return "Bu e-posta adresi zaten kullanımda. Lütfen 'Giriş Yap' sekmesinden şifrenizle giriş yapın.";
   }
   if (lower.includes("email not confirmed")) {
-    return "E-posta adresiniz henüz doğrulanmamış. Lütfen gelen kutunuzu kontrol edin.";
+    return "E-posta adresiniz henüz doğrulanmamış. Lütfen gelen kutunuzdaki onay linkine tıklayın.";
   }
   if (lower.includes("password should be at least")) {
     return "Şifreniz en az 6 karakter uzunluğunda olmalıdır.";
@@ -340,7 +343,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     password: string,
     passwordConfirm: string,
     name: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; error?: string; requiresEmailConfirmation?: boolean }> => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
 
@@ -363,81 +366,162 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const isAdminUser = checkIsAdmin(cleanEmail);
-    let registeredUser: User | null = null;
 
-    // 2. Supabase Aktifse Supabase SignUp Denemesi
+    // 2. Supabase Aktifse Gerçek Supabase Auth Kaydı
     if (isSupabaseConfigured && supabase) {
       try {
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: {
-            data: {
-              name: cleanName,
-            },
-          },
-        });
+        // 1000+ anlık yük durumunda geçici hataları toparlamak için retry mekanizması
+        let attempts = 0;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let lastError: any = null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let signUpData: any = null;
 
-        if (error) {
-          const lower = error.message.toLowerCase();
-          // Rate limit veya SMTP kotası aşıldıysa kullanıcıyı engellemiyoruz, yerel oturumla devam ediyoruz
-          if (lower.includes("rate limit") || lower.includes("quota") || error.status === 429) {
-            console.warn(
-              "Supabase e-posta kotası uyarısı. Kullanıcı hesabı yerel depolamayla güvenli şekilde oluşturuluyor."
-            );
-          } else if (
-            lower.includes("already registered") ||
-            lower.includes("already exists")
-          ) {
-            return {
-              success: false,
-              error: "Bu e-posta adresi zaten kullanımda. Lütfen 'Giriş Yap' sekmesinden şifrenizle giriş yapın.",
-            };
-          } else {
-            return { success: false, error: translateAuthError(error.message) };
+        while (attempts < 3) {
+          attempts++;
+          try {
+            const { data, error } = await supabase.auth.signUp({
+              email: cleanEmail,
+              password,
+              options: {
+                data: {
+                  name: cleanName,
+                  display_name: cleanName,
+                },
+                emailRedirectTo:
+                  typeof window !== "undefined"
+                    ? `${window.location.origin}`
+                    : undefined,
+              },
+            });
+
+            if (error) {
+              lastError = error;
+              // Geçici ağ veya sunucu 5xx hatası ise biraz bekleyip tekrar dene
+              if (error.status && error.status >= 500 && attempts < 3) {
+                await new Promise((res) => setTimeout(res, 800 * attempts));
+                continue;
+              }
+              break;
+            } else {
+              signUpData = data;
+              lastError = null;
+              break;
+            }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } catch (netErr: any) {
+            lastError = netErr;
+            if (attempts < 3) {
+              await new Promise((res) => setTimeout(res, 800 * attempts));
+              continue;
+            }
           }
-        } else if (data?.user) {
-          registeredUser = {
-            id: data.user.id,
+        }
+
+        if (lastError) {
+          console.error("Supabase signUp hatası:", lastError);
+          return {
+            success: false,
+            error: translateAuthError(lastError.message || String(lastError)),
+          };
+        }
+
+        const user = signUpData?.user;
+        const session = signUpData?.session;
+
+        // Supabase güvenlik mekanizması: E-posta zaten kayıtlıysa bazen hata fırlatmaz, user.identities'i boş dizi döner
+        if (user && Array.isArray(user.identities) && user.identities.length === 0) {
+          return {
+            success: false,
+            error: "Bu e-posta adresi zaten kullanımda. Lütfen 'Giriş Yap' sekmesinden şifrenizle giriş yapın.",
+          };
+        }
+
+        // Eğer e-posta doğrulaması açıksa (Confirm Email ON), Supabase kullanıcıyı oluşturur ama session null döner
+        if (user && !session) {
+          return {
+            success: true,
+            requiresEmailConfirmation: true,
+          };
+        }
+
+        if (user) {
+          const registeredUser: User = {
+            id: user.id,
             email: cleanEmail,
             name: cleanName || (isAdminUser ? AUTHOR_NAME : cleanEmail.split("@")[0]),
             role: isAdminUser ? "admin" : "reader",
-            avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-              cleanEmail
-            )}`,
-            createdAt: data.user.created_at,
+            avatarUrl:
+              user.user_metadata?.avatar_url ||
+              `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanEmail)}`,
+            createdAt: user.created_at,
           };
+
+          // Yedek yerel listeyi de gerçek ID ile senkronize tut
+          const usersDb = getLocalUsersDb();
+          const existingIdx = usersDb.findIndex((u) => u.email.toLowerCase() === cleanEmail);
+          const userRecord: StoredUserAccount = {
+            id: user.id,
+            email: cleanEmail,
+            passwordHash: password,
+            name: cleanName,
+            role: isAdminUser ? "admin" : "reader",
+            avatarUrl:
+              registeredUser.avatarUrl ||
+              `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanEmail)}`,
+            createdAt: user.created_at,
+          };
+          if (existingIdx >= 0) {
+            usersDb[existingIdx] = userRecord;
+          } else {
+            usersDb.push(userRecord);
+          }
+          saveLocalUsersDb(usersDb);
+
+          setCurrentUser(registeredUser);
+          localStorage.setItem("auth_session_user", JSON.stringify(registeredUser));
+          setAuthModalOpen(false);
+          return { success: true, requiresEmailConfirmation: false };
         }
-      } catch (err) {
-        console.warn("Supabase signUp istisnası:", err);
+
+        return {
+          success: false,
+          error: "Kayıt işlemi tamamlanamadı. Lütfen tekrar deneyin.",
+        };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } catch (err: any) {
+        console.error("Supabase signUp istisnası:", err);
+        return {
+          success: false,
+          error: translateAuthError(err.message || "Kayıt sırasında bir hata oluştu."),
+        };
       }
     }
 
-    // 3. Kullanıcı Bilgilerini Yerel Güvenli Veritabanına da Ekle
+    // 3. Yerel Test / Geliştirme Modu (Yalnızca Supabase hiç bağlanmamışsa kullanılır)
     const usersDb = getLocalUsersDb();
-    const existingIdx = usersDb.findIndex((u) => u.email.toLowerCase() === cleanEmail);
+    const existing = usersDb.find((u) => u.email.toLowerCase() === cleanEmail);
+    if (existing) {
+      return {
+        success: false,
+        error: "Bu e-posta adresi zaten yerel veritabanında kayıtlı.",
+      };
+    }
 
     const userRecord: StoredUserAccount = {
-      id: registeredUser?.id || "usr-" + Math.random().toString(36).substring(2, 9),
+      id: "usr-" + Math.random().toString(36).substring(2, 9),
       email: cleanEmail,
       passwordHash: password,
       name: cleanName,
       role: isAdminUser ? "admin" : "reader",
-      avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-        cleanEmail
-      )}`,
+      avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanEmail)}`,
       createdAt: new Date().toISOString(),
     };
 
-    if (existingIdx >= 0) {
-      usersDb[existingIdx] = userRecord;
-    } else {
-      usersDb.push(userRecord);
-    }
+    usersDb.push(userRecord);
     saveLocalUsersDb(usersDb);
 
-    // Oturumu hemen ve kalıcı olarak aç
-    const activeUser: User = registeredUser || {
+    const activeUser: User = {
       id: userRecord.id,
       email: userRecord.email,
       name: userRecord.name,
@@ -448,8 +532,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setCurrentUser(activeUser);
     localStorage.setItem("auth_session_user", JSON.stringify(activeUser));
-    setAuthModalOpen(false);
-    return { success: true };
     setAuthModalOpen(false);
     return { success: true };
   };

@@ -1,8 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import type { Story, Artwork, Comment } from "../types";
-import { initialStories } from "../data/stories";
-import { initialArtworks } from "../data/artworks";
-import { initialComments } from "../data/comments";
 import { useAuth } from "./AuthContext";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -12,6 +9,7 @@ interface DataContextType {
   comments: Comment[];
   isLoading: boolean;
   isCloudConnected: boolean;
+  refreshData: () => Promise<void>;
   // Story İşlemleri
   addStory: (story: Omit<Story, "id">) => Promise<Story | null>;
   updateStory: (id: string, updates: Partial<Story>) => Promise<boolean>;
@@ -93,27 +91,60 @@ function mapCommentFromDb(row: any): Comment {
   };
 }
 
+const MOCK_STORY_SLUGS = new Set([
+  "sessizligin-mimarisi",
+  "altin-saati-kovalamak",
+  "kotu-uretmenin-erdemi",
+  "bellegin-rengi",
+  "dijital-detoks-efsanesi",
+  "kelimelerin-agirligi",
+]);
+
+function getCleanCached<T>(key: string, isMock: (item: T) => boolean): T[] {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    const clean = parsed.filter((item: T) => !isMock(item));
+    if (clean.length !== parsed.length) {
+      localStorage.setItem(key, JSON.stringify(clean));
+    }
+    return clean;
+  } catch {
+    return [];
+  }
+}
+
 export function DataProvider({ children }: { children: React.ReactNode }) {
   const { currentUser, isAdmin } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
 
-  // ─── State Tanımları (Fallback: localStorage veya initial) ────────────
-  const [stories, setStories] = useState<Story[]>(() => {
-    const saved = localStorage.getItem("app_stories");
-    return saved ? JSON.parse(saved) : initialStories;
-  });
+  // ─── State Tanımları (Mock veriler temizlenmiş olarak başlar) ──────────
+  const [stories, setStories] = useState<Story[]>(() =>
+    getCleanCached<Story>(
+      "app_stories",
+      (s) =>
+        MOCK_STORY_SLUGS.has(s.slug) ||
+        ["1", "2", "3", "4", "5", "6"].includes(s.id)
+    )
+  );
 
-  const [artworks, setArtworks] = useState<Artwork[]>(() => {
-    const saved = localStorage.getItem("app_artworks");
-    return saved ? JSON.parse(saved) : initialArtworks;
-  });
+  const [artworks, setArtworks] = useState<Artwork[]>(() =>
+    getCleanCached<Artwork>(
+      "app_artworks",
+      (a) => ["1", "2", "3", "4", "5", "6", "7", "8", "9"].includes(a.id)
+    )
+  );
 
-  const [comments, setComments] = useState<Comment[]>(() => {
-    const saved = localStorage.getItem("app_comments");
-    return saved ? JSON.parse(saved) : initialComments;
-  });
+  const [comments, setComments] = useState<Comment[]>(() =>
+    getCleanCached<Comment>(
+      "app_comments",
+      (c) => ["c1", "c2", "c3", "c4"].includes(c.id)
+    )
+  );
 
-  // ─── Supabase'den Verileri Çekme ──────────────────────────────────────
+  // ─── Supabase'den Verileri Çekme (Single Source of Truth) ─────────────
   const fetchAllFromSupabase = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setIsLoading(false);
@@ -121,16 +152,18 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      setIsLoading(true);
-
       // 1. Hikayeler
       const { data: dbStories, error: storyErr } = await supabase
         .from("stories")
         .select("*")
         .order("published_at", { ascending: false });
 
-      if (!storyErr && dbStories && dbStories.length > 0) {
-        setStories(dbStories.map(mapStoryFromDb));
+      if (storyErr) {
+        console.error("Supabase stories çekme hatası:", storyErr);
+      } else if (dbStories) {
+        const mapped = dbStories.map(mapStoryFromDb);
+        setStories(mapped);
+        localStorage.setItem("app_stories", JSON.stringify(mapped));
       }
 
       // 2. Eserler
@@ -139,8 +172,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (!artErr && dbArtworks && dbArtworks.length > 0) {
-        setArtworks(dbArtworks.map(mapArtworkFromDb));
+      if (artErr) {
+        console.error("Supabase artworks çekme hatası:", artErr);
+      } else if (dbArtworks) {
+        const mapped = dbArtworks.map(mapArtworkFromDb);
+        setArtworks(mapped);
+        localStorage.setItem("app_artworks", JSON.stringify(mapped));
       }
 
       // 3. Yorumlar
@@ -149,72 +186,72 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (!comErr && dbComments && dbComments.length > 0) {
-        setComments(dbComments.map(mapCommentFromDb));
+      if (comErr) {
+        console.error("Supabase comments çekme hatası:", comErr);
+      } else if (dbComments) {
+        const mapped = dbComments.map(mapCommentFromDb);
+        setComments(mapped);
+        localStorage.setItem("app_comments", JSON.stringify(mapped));
       }
     } catch (err) {
-      console.warn("Supabase veri çekme hatası (yerel veriler kullanılıyor):", err);
+      console.warn("Supabase veri çekme hatası (yerel önbellek kullanılıyor):", err);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  // ─── Realtime Aboneliği & İlk Veri Yükleme (Çoklu Cihaz Senkronizasyonu) ───
   useEffect(() => {
+    // 1. Panel/Sayfa açıldığında doğrudan Supabase'den en güncel verileri çek
     fetchAllFromSupabase();
+
+    if (!isSupabaseConfigured || !supabase) return;
+
+    // 2. Supabase Realtime (postgres_changes) aboneliği
+    // Herhangi bir cihazda ekleme/silme/güncelleme olduğunda diğer tüm cihazlar anında güncellenir
+    const channel = supabase
+      .channel("realtime-blog-sync")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "stories" },
+        (payload) => {
+          console.log("[Realtime] Stories tablosunda değişiklik:", payload.eventType);
+          fetchAllFromSupabase();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "artworks" },
+        (payload) => {
+          console.log("[Realtime] Artworks tablosunda değişiklik:", payload.eventType);
+          fetchAllFromSupabase();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "comments" },
+        (payload) => {
+          console.log("[Realtime] Comments tablosunda değişiklik:", payload.eventType);
+          fetchAllFromSupabase();
+        }
+      )
+      .subscribe((status, err) => {
+        if (err) {
+          console.warn("[Realtime] Abonelik hatası:", err);
+        } else {
+          console.log("[Realtime] Kanal durumu:", status);
+        }
+      });
+
+    return () => {
+      supabase?.removeChannel(channel);
+    };
   }, [fetchAllFromSupabase]);
-
-  // Yerel depolama senkronizasyonu
-  useEffect(() => {
-    localStorage.setItem("app_stories", JSON.stringify(stories));
-  }, [stories]);
-
-  useEffect(() => {
-    localStorage.setItem("app_artworks", JSON.stringify(artworks));
-  }, [artworks]);
-
-  useEffect(() => {
-    localStorage.setItem("app_comments", JSON.stringify(comments));
-  }, [comments]);
 
   // ─── Başlangıç Verilerini Supabase'e Otomatik Yükleme Fonksiyonu ───────
   const seedInitialDataToSupabase = async (): Promise<boolean> => {
-    if (!isSupabaseConfigured || !supabase) return false;
-
-    try {
-      // Hikayeleri ekle
-      const storiesPayload = initialStories.map((s) => ({
-        slug: s.slug,
-        title: s.title,
-        excerpt: s.excerpt,
-        content: s.content,
-        cover_image: s.coverImage,
-        tags: s.tags,
-        reading_time: s.readingTime,
-        featured: Boolean(s.featured),
-        published_at: s.publishedAt,
-      }));
-      await supabase.from("stories").upsert(storiesPayload, { onConflict: "slug" });
-
-      // Eserleri ekle
-      const artworksPayload = initialArtworks.map((a) => ({
-        title: a.title,
-        description: a.description,
-        image_url: a.imageUrl,
-        high_res_url: a.highResUrl,
-        medium: a.medium,
-        tags: a.tags,
-        aspect_ratio: a.aspectRatio || "portrait",
-        featured: Boolean(a.featured),
-        created_at: a.createdAt,
-      }));
-      await supabase.from("artworks").insert(artworksPayload);
-
-      await fetchAllFromSupabase();
-      return true;
-    } catch (e) {
-      console.error("Tohumlama hatası:", e);
-      return false;
-    }
+    await fetchAllFromSupabase();
+    return true;
   };
 
   // ─── Hikaye İşlemleri (CRUD) ──────────────────────────────────────────
@@ -249,6 +286,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         } else if (data) {
           const mapped = mapStoryFromDb(data);
           setStories((prev) => prev.map((s) => (s.id === tempId ? mapped : s)));
+          fetchAllFromSupabase();
           return mapped;
         }
       } catch (err) {
@@ -279,6 +317,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (updates.pdfUrl !== undefined) dbPayload.pdf_url = updates.pdfUrl;
 
         await supabase.from("stories").update(dbPayload).eq("id", id);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase story update error:", err);
       }
@@ -293,6 +332,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.from("stories").delete().eq("id", id);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase story delete error:", err);
       }
@@ -341,6 +381,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         } else if (data) {
           const mapped = mapArtworkFromDb(data);
           setArtworks((prev) => prev.map((a) => (a.id === tempId ? mapped : a)));
+          fetchAllFromSupabase();
           return mapped;
         }
       } catch (err) {
@@ -369,6 +410,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (updates.featured !== undefined) dbPayload.featured = updates.featured;
 
         await supabase.from("artworks").update(dbPayload).eq("id", id);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase artwork update error:", err);
       }
@@ -382,6 +424,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.from("artworks").delete().eq("id", id);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase artwork delete error:", err);
       }
@@ -444,6 +487,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         } else if (data) {
           const mapped = mapCommentFromDb(data);
           setComments((prev) => prev.map((c) => (c.id === tempId ? mapped : c)));
+          fetchAllFromSupabase();
           return mapped;
         }
       } catch (err) {
@@ -485,6 +529,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", commentId);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase comment update error:", err);
       }
@@ -508,6 +553,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.from("comments").delete().eq("id", commentId);
+        fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase comment delete error:", err);
       }
@@ -535,9 +581,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   };
 
   const resetToDefaults = () => {
-    setStories(initialStories);
-    setArtworks(initialArtworks);
-    setComments(initialComments);
+    setStories([]);
+    setArtworks([]);
+    setComments([]);
     localStorage.removeItem("app_stories");
     localStorage.removeItem("app_artworks");
     localStorage.removeItem("app_comments");
@@ -551,6 +597,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         comments,
         isLoading,
         isCloudConnected: isSupabaseConfigured,
+        refreshData: fetchAllFromSupabase,
         addStory,
         updateStory,
         deleteStory,
