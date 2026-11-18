@@ -231,7 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const usersDb = getLocalUsersDb();
     const existing = usersDb.find((u) => u.email.toLowerCase() === cleanEmail);
 
-    // 2. Supabase Aktifse Supabase Auth ile Giriş
+    // 2. Supabase Aktifse Supabase Auth ile Giriş (local fallback YOK — gerçek JWT zorunlu)
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
@@ -239,51 +239,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (error) {
-        // Eğer yerel db'de bu kullanıcı ve şifre kayıtlıysa (örneğin rate limit sırasında kaydedilmişse veya e-posta onayı bekleniyorsa):
-        if (existing && existing.passwordHash === password) {
-          const loggedIn: User = {
-            id: existing.id,
-            email: existing.email,
-            name:
-              existing.name ||
-              (isAdminUser ? AUTHOR_NAME : cleanEmail.split("@")[0]),
-            role: isAdminUser ? "admin" : existing.role || "reader",
-            avatarUrl: existing.avatarUrl,
-            createdAt: existing.createdAt,
-          };
-          setCurrentUser(loggedIn);
-          localStorage.setItem("auth_session_user", JSON.stringify(loggedIn));
-          setAuthModalOpen(false);
-          return { success: true };
-        }
-
-        if (isAdminUser) {
-          // Yönetici şifresini doğrula
-          const expectedPassword = existing?.passwordHash || "admin123";
-          if (password === expectedPassword) {
-            const adminUser: User = {
-              id: existing?.id || "8881ab2d-11b6-416f-a8cc-b0c167e3b579",
-              email: cleanEmail,
-              name: AUTHOR_NAME,
-              role: "admin",
-              avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-                cleanEmail
-              )}`,
-              createdAt: new Date().toISOString(),
-            };
-            setCurrentUser(adminUser);
-            localStorage.setItem("auth_session_user", JSON.stringify(adminUser));
-            setAuthModalOpen(false);
-            return { success: true };
-          } else {
-            return {
-              success: false,
-              error: "Hatalı şifre girdiniz. Lütfen tekrar deneyin.",
-            };
-          }
-        }
-
-        // Hata mesajını Türkçeleştir
+        // Supabase aktifken hiçbir local fallback yok — gerçek Supabase hatası döndür
+        // (Local fallback kullanılırsa Supabase JWT olmaz → RLS tüm yazma işlemlerini bloklar)
         return { success: false, error: translateAuthError(error.message) };
       }
 
