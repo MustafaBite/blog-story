@@ -36,7 +36,7 @@ export function StoryDetailPage() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
 
-  const { getStoryBySlug, stories } = useData();
+  const { getStoryBySlug, stories, isLoading } = useData();
   const { authorName } = useAuth();
 
   useEffect(() => {
@@ -44,6 +44,17 @@ export function StoryDetailPage() {
   }, [slug]);
 
   const story = slug ? getStoryBySlug(slug) : undefined;
+
+  if (isLoading && !story) {
+    return (
+      <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4 text-center px-4">
+        <div className="w-10 h-10 border-4 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+        <p className={`text-sm ${isDark ? "text-dark-400" : "text-slate-500"}`}>
+          Hikaye yükleniyor...
+        </p>
+      </div>
+    );
+  }
 
   if (!story) {
     return (

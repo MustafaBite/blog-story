@@ -315,8 +315,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (updates.readingTime !== undefined) dbPayload.reading_time = updates.readingTime;
         if (updates.featured !== undefined) dbPayload.featured = updates.featured;
         if (updates.pdfUrl !== undefined) dbPayload.pdf_url = updates.pdfUrl;
+        if (updates.publishedAt !== undefined) dbPayload.published_at = updates.publishedAt;
+        dbPayload.updated_at = new Date().toISOString();
 
-        await supabase.from("stories").update(dbPayload).eq("id", id);
+        const { error } = await supabase.from("stories").update(dbPayload).eq("id", id);
+        if (error) console.error("Supabase story update notice:", error.message);
         fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase story update error:", err);
@@ -408,8 +411,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (updates.medium !== undefined) dbPayload.medium = updates.medium;
         if (updates.tags !== undefined) dbPayload.tags = updates.tags;
         if (updates.featured !== undefined) dbPayload.featured = updates.featured;
+        if (updates.aspectRatio !== undefined) dbPayload.aspect_ratio = updates.aspectRatio;
+        dbPayload.updated_at = new Date().toISOString();
 
-        await supabase.from("artworks").update(dbPayload).eq("id", id);
+        const { error } = await supabase.from("artworks").update(dbPayload).eq("id", id);
+        if (error) console.error("Supabase artwork update notice:", error.message);
         fetchAllFromSupabase();
       } catch (err) {
         console.error("Supabase artwork update error:", err);

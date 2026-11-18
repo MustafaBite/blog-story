@@ -258,22 +258,40 @@ export function AdminDashboardPage() {
     }
   };
 
-  const saveStory = (e: React.FormEvent) => {
+  const slugify = (text: string): string => {
+    const trMap: Record<string, string> = {
+      ç: "c", Ç: "c",
+      ğ: "g", Ğ: "g",
+      ı: "i", İ: "i",
+      ö: "o", Ö: "o",
+      ş: "s", Ş: "s",
+      ü: "u", Ü: "u",
+    };
+    return text
+      .split("")
+      .map((char) => trMap[char] || char)
+      .join("")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  };
+
+  const saveStory = async (e: React.FormEvent) => {
     e.preventDefault();
     const tagList = storyForm.tags
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
 
-    const slug =
-      storyForm.slug.trim() ||
-      storyForm.title
-        .toLowerCase()
-        .replace(/[^a-z0-9ğüşıöç]+/g, "-")
-        .replace(/^-+|-+$/g, "");
+    const slug = storyForm.slug.trim()
+      ? slugify(storyForm.slug)
+      : slugify(storyForm.title) || `yazi-${Date.now()}`;
 
     if (editingStoryId) {
-      updateStory(editingStoryId, {
+      await updateStory(editingStoryId, {
         title: storyForm.title,
         slug,
         excerpt: storyForm.excerpt,
@@ -285,7 +303,7 @@ export function AdminDashboardPage() {
         pdfUrl: storyForm.pdfUrl || undefined,
       });
     } else {
-      addStory({
+      await addStory({
         title: storyForm.title,
         slug,
         excerpt: storyForm.excerpt,
@@ -332,7 +350,7 @@ export function AdminDashboardPage() {
     setIsArtModalOpen(true);
   };
 
-  const saveArt = (e: React.FormEvent) => {
+  const saveArt = async (e: React.FormEvent) => {
     e.preventDefault();
     const tagList = artForm.tags
       .split(",")
@@ -340,7 +358,7 @@ export function AdminDashboardPage() {
       .filter(Boolean);
 
     if (editingArtId) {
-      updateArtwork(editingArtId, {
+      await updateArtwork(editingArtId, {
         title: artForm.title,
         description: artForm.description,
         imageUrl: artForm.imageUrl,
@@ -350,7 +368,7 @@ export function AdminDashboardPage() {
         featured: artForm.featured,
       });
     } else {
-      addArtwork({
+      await addArtwork({
         title: artForm.title,
         description: artForm.description,
         imageUrl: artForm.imageUrl,
