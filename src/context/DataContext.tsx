@@ -283,14 +283,22 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
         if (error) {
           console.error("Supabase story insert error:", error);
+          setStories((prev) => prev.filter((s) => s.id !== tempId));
+          const msg =
+            error.code === "42501"
+              ? "Yetki hatası: Supabase oturumunuz geçerli değil. Lütfen sağ üstten 'Çıkış Yap' diyerek şifrenizle tekrar giriş yapın."
+              : `Supabase kayıt hatası: ${error.message}`;
+          throw new Error(msg);
         } else if (data) {
           const mapped = mapStoryFromDb(data);
           setStories((prev) => prev.map((s) => (s.id === tempId ? mapped : s)));
           fetchAllFromSupabase();
           return mapped;
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Supabase story insert failed:", err);
+        setStories((prev) => prev.filter((s) => s.id !== tempId));
+        throw err;
       }
     }
 
@@ -381,14 +389,22 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
         if (error) {
           console.error("Supabase artwork insert error:", error);
+          setArtworks((prev) => prev.filter((a) => a.id !== tempId));
+          const msg =
+            error.code === "42501"
+              ? "Yetki hatası: Supabase oturumunuz geçerli değil. Lütfen sağ üstten 'Çıkış Yap' diyerek şifrenizle tekrar giriş yapın."
+              : `Supabase kayıt hatası: ${error.message}`;
+          throw new Error(msg);
         } else if (data) {
           const mapped = mapArtworkFromDb(data);
           setArtworks((prev) => prev.map((a) => (a.id === tempId ? mapped : a)));
           fetchAllFromSupabase();
           return mapped;
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Supabase artwork insert failed:", err);
+        setArtworks((prev) => prev.filter((a) => a.id !== tempId));
+        throw err;
       }
     }
 

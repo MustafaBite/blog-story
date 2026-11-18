@@ -159,6 +159,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           };
           setCurrentUser(mappedUser);
           localStorage.setItem("auth_session_user", JSON.stringify(mappedUser));
+        } else {
+          // Supabase yapılandırılmışken aktif geçerli oturum yoksa sahte/eski yerel admini temizle
+          setCurrentUser(null);
+          localStorage.removeItem("auth_session_user");
         }
       });
 

@@ -290,33 +290,37 @@ export function AdminDashboardPage() {
       ? slugify(storyForm.slug)
       : slugify(storyForm.title) || `yazi-${Date.now()}`;
 
-    if (editingStoryId) {
-      await updateStory(editingStoryId, {
-        title: storyForm.title,
-        slug,
-        excerpt: storyForm.excerpt,
-        content: storyForm.content,
-        coverImage: storyForm.coverImage,
-        tags: tagList,
-        readingTime: Number(storyForm.readingTime),
-        featured: storyForm.featured,
-        pdfUrl: storyForm.pdfUrl || undefined,
-      });
-    } else {
-      await addStory({
-        title: storyForm.title,
-        slug,
-        excerpt: storyForm.excerpt,
-        content: storyForm.content,
-        coverImage: storyForm.coverImage,
-        tags: tagList,
-        readingTime: Number(storyForm.readingTime),
-        publishedAt: new Date().toISOString(),
-        featured: storyForm.featured,
-        pdfUrl: storyForm.pdfUrl || undefined,
-      });
+    try {
+      if (editingStoryId) {
+        await updateStory(editingStoryId, {
+          title: storyForm.title,
+          slug,
+          excerpt: storyForm.excerpt,
+          content: storyForm.content,
+          coverImage: storyForm.coverImage,
+          tags: tagList,
+          readingTime: Number(storyForm.readingTime),
+          featured: storyForm.featured,
+          pdfUrl: storyForm.pdfUrl || undefined,
+        });
+      } else {
+        await addStory({
+          title: storyForm.title,
+          slug,
+          excerpt: storyForm.excerpt,
+          content: storyForm.content,
+          coverImage: storyForm.coverImage,
+          tags: tagList,
+          readingTime: Number(storyForm.readingTime),
+          publishedAt: new Date().toISOString(),
+          featured: storyForm.featured,
+          pdfUrl: storyForm.pdfUrl || undefined,
+        });
+      }
+      setIsStoryModalOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Hikaye kaydedilirken bir hata oluştu.");
     }
-    setIsStoryModalOpen(false);
   };
 
   // ─── Eser Form İşlemleri ───────────────────────────────────────────────
@@ -357,30 +361,34 @@ export function AdminDashboardPage() {
       .map((t) => t.trim())
       .filter(Boolean);
 
-    if (editingArtId) {
-      await updateArtwork(editingArtId, {
-        title: artForm.title,
-        description: artForm.description,
-        imageUrl: artForm.imageUrl,
-        highResUrl: artForm.highResUrl || artForm.imageUrl,
-        medium: artForm.medium,
-        tags: tagList,
-        featured: artForm.featured,
-      });
-    } else {
-      await addArtwork({
-        title: artForm.title,
-        description: artForm.description,
-        imageUrl: artForm.imageUrl,
-        highResUrl: artForm.highResUrl || artForm.imageUrl,
-        medium: artForm.medium,
-        tags: tagList,
-        createdAt: new Date().toISOString(),
-        featured: artForm.featured,
-        aspectRatio: "portrait",
-      });
+    try {
+      if (editingArtId) {
+        await updateArtwork(editingArtId, {
+          title: artForm.title,
+          description: artForm.description,
+          imageUrl: artForm.imageUrl,
+          highResUrl: artForm.highResUrl || artForm.imageUrl,
+          medium: artForm.medium,
+          tags: tagList,
+          featured: artForm.featured,
+        });
+      } else {
+        await addArtwork({
+          title: artForm.title,
+          description: artForm.description,
+          imageUrl: artForm.imageUrl,
+          highResUrl: artForm.highResUrl || artForm.imageUrl,
+          medium: artForm.medium,
+          tags: tagList,
+          createdAt: new Date().toISOString(),
+          featured: artForm.featured,
+          aspectRatio: "portrait",
+        });
+      }
+      setIsArtModalOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Eser kaydedilirken bir hata oluştu.");
     }
-    setIsArtModalOpen(false);
   };
 
   return (
